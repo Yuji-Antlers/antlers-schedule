@@ -70,87 +70,102 @@ def fetch_html(url: str) -> str:
 DATE_RE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
 TIME_RE = re.compile(r"([0-2]?\d:[0-5]\d)")
 TICKET_RE = re.compile(r"jleague-ticket\.jp/\S+")
+# 試合詳細リンク: /match/<大会>/<年>/<6桁ID>/live のような形
+MATCH_LINK_RE = re.compile(r"/match/[a-z0-9]+/\d{4}/\d{6}/(?:live|ticket)")
+# クラブへのリンク
+CLUB_LINK_RE = re.compile(r"/club/([a-z0-9]+)/")
 
 
 def parse_matches(html: str) -> list[dict]:
     """
     日程ページHTMLを解析して試合のリストを返す。
 
-    クラス名に強く依存せず、「日付見出し→大会名→対戦カード」という
-    出現順のパターンで拾うため、多少のHTML変更に耐えやすい。
-    各試合ブロックは div でまとまっている前提。
+    Jリーグ公式の実構造に合わせ、「試合詳細リンク(/match/.../live)」を
+    含む要素を1試合の単位として拾う。各試合の対戦カードは
+    「| 鹿島 | 得点 | 時刻 状態 会場 | 得点 | 相手 |」のように
+    1行に潰れたテーブル形式なので、テキストとリンク順から復元する。
+
+    日付・大会名は試合要素の直前に見出し(h4/h3)として現れるため、
+    文書順に走査して直近の日付・大会を各試合に紐づける。
     """
     soup = BeautifulSoup(html, "html.parser")
     matches: list[dict] = []
-
-    # 試合ブロックの候補: 日付テキストを含む見出しを起点にする。
-    # 構造が読みやすいよう、まずブロック単位（divやsection）を走査する。
-    blocks = soup.find_all(["div", "section", "li"])
     seen_keys = set()
 
-    for block in blocks:
-        text = block.get_text(" ", strip=True)
-        if CLUB_NAME not in text:
-            continue
-        date_m = DATE_RE.search(text)
-        if not date_m:
-            continue
-        # 対戦カード行（VS または スコア）が含まれるブロックだけを対象にする
-        if "ＶＳ" not in text and "VS" not in text and "試合終了" not in text:
+    current_date = ""   # 直近に見つかった日付 (YYYY-MM-DD)
+    current_comp = ""   # 直近に見つかった大会名
+
+    # 文書順に全要素を走査
+    for el in soup.find_all(["h2", "h3", "h4", "h5", "a"]):
+        name = el.name
+        text = el.get_text(" ", strip=True)
+
+        # 見出し: 日付か大会名かを判定して記憶
+        if name in ("h2", "h3", "h4", "h5"):
+            dm = DATE_RE.search(text)
+            if dm:
+                y, mo, d = (int(dm.group(i)) for i in (1, 2, 3))
+                current_date = f"{y:04d}-{mo:02d}-{d:02d}"
+            elif any(k in text for k in ("リーグ", "カップ", "天皇杯",
+                                         "プレーオフ", "ＡＣ", "AC",
+                                         "スーパーカップ", "チャレンジ")):
+                current_comp = text
             continue
 
-        rec = _parse_block(block, text, date_m)
-        if rec is None:
-            continue
-
-        key = (rec["date"], rec["home"], rec["away"], rec["kickoff_time"])
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        matches.append(rec)
+        # リンク: 試合詳細リンクを持つものを試合の単位とする
+        if name == "a":
+            href = el.get("href", "")
+            if not MATCH_LINK_RE.search(href):
+                continue
+            rec = _parse_match_link(el, text, current_date, current_comp)
+            if rec is None:
+                continue
+            key = (rec["date"], rec["home"], rec["away"])
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            matches.append(rec)
 
     return matches
 
 
-def _parse_block(block, text: str, date_m) -> dict | None:
-    """1つの試合ブロックから情報を抽出する。"""
-    year, month, day = (int(date_m.group(i)) for i in (1, 2, 3))
-    date_str = f"{year:04d}-{month:02d}-{day:02d}"
-
-    # 大会名（節を含む見出し）
-    comp = ""
-    comp_tag = block.find(["h3", "h2"])
-    if comp_tag:
-        comp = comp_tag.get_text(" ", strip=True)
-
-    # 対戦クラブ: club/<slug>/ へのリンクから2チームを拾う
-    clubs = []
-    for a in block.find_all("a", href=True):
-        m = re.search(r"/club/([a-z0-9]+)/", a["href"])
-        name = a.get_text(strip=True)
-        if m and name and name not in ("",):
-            clubs.append((m.group(1), name))
-    # 重複を除きつつ順序維持（最初に出る2つがホーム・アウェイ）
-    uniq = []
-    for slug, name in clubs:
-        if (slug, name) not in uniq:
-            uniq.append((slug, name))
-    if len(uniq) < 2:
+def _parse_match_link(el, text: str, date_str: str, comp: str) -> dict | None:
+    """
+    試合詳細リンク要素から1試合の情報を抽出する。
+    リンク内のテキストは
+      「| 鹿島 | 1 | 15:00 試合終了 メルスタ | 0 | 横浜FM | DAZN |」
+    のような形。内側の club リンクからホーム・アウェイ名を取る。
+    """
+    if not date_str:
         return None
-    (home_slug, home_name), (away_slug, away_name) = uniq[0], uniq[1]
 
-    # キックオフ時刻
+    # 対戦クラブ名: リンク内の /club/ リンクを順に拾う（先=ホーム, 後=アウェイ）
+    clubs = []
+    for a in el.find_all("a", href=True):
+        m = CLUB_LINK_RE.search(a["href"])
+        nm = a.get_text(strip=True)
+        if m and nm:
+            clubs.append(nm)
+    # リンク内に club リンクが無い場合がある（テキストだけ）のでフォールバック
+    if len(clubs) < 2:
+        return None
+    home_name, away_name = clubs[0], clubs[1]
+
+    # 時刻: 「未定」も許容。HH:MM があれば採用、なければ "未定" を判定
     time_m = TIME_RE.search(text)
-    kickoff_time = time_m.group(1) if time_m else ""
+    if time_m:
+        kickoff_time = time_m.group(1)
+    elif "未定" in text:
+        kickoff_time = "未定"
+    else:
+        kickoff_time = ""
 
-    # 会場: 時刻とVS/結果の後ろにある短い語を会場として推定
     venue = _guess_venue(text)
 
-    # チケットURL
-    ticket_m = TICKET_RE.search(str(block))
+    ticket_m = TICKET_RE.search(str(el))
     ticket_url = ("https://www." + ticket_m.group(0)) if ticket_m else ""
 
-    # ホーム/アウェイ判定（鹿島から見て）
+    # ホーム/アウェイ判定（鹿島視点）
     if CLUB_NAME in home_name:
         home_or_away = "HOME"
     elif CLUB_NAME in away_name:
@@ -158,7 +173,6 @@ def _parse_block(block, text: str, date_m) -> dict | None:
     else:
         home_or_away = "UNKNOWN"
 
-    # 試合状態: スコアが入っていれば終了扱い
     status = "FINISHED" if "試合終了" in text else "SCHEDULED"
 
     rec = {
@@ -181,9 +195,11 @@ def _guess_venue(text: str) -> str:
     """テキストから会場名らしき短い語を推定する。"""
     # よく出る会場略称（鹿島の対戦で頻出のもの）。網羅でなく補助。
     known = [
-        "メルスタ", "メルカリスタジアム", "Ｋｓスタ", "カシマ",
-        "埼玉", "日産ス", "味スタ", "フクアリ", "三協Ｆ柏",
-        "Ｕ等々力", "等々力", "MUFG国立", "国立",
+        "メルカリスタジアム", "メルスタ", "Ｋｓスタ", "カシマ",
+        "MUFG国立", "国立", "埼玉", "日産ス", "味スタ", "フクアリ",
+        "三協Ｆ柏", "Ｕ等々力", "等々力", "豊田ス", "パナスタ",
+        "ヨドコウ", "ノエスタ", "エディオンピース", "ベススタ",
+        "トラスタ", "ニッパツ", "レモンガススタジアム",
     ]
     for v in known:
         if v in text:
@@ -305,17 +321,32 @@ def render_html(conn: sqlite3.Connection) -> str:
     def esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    trs = []
-    for date, t, comp, hoa, opp, venue, ticket, status in rows:
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    def make_row(r):
+        date, t, comp, hoa, opp, venue, ticket, status = r
         hoa_label = {"HOME": "ホーム", "AWAY": "アウェイ"}.get(hoa, hoa or "—")
         ticket_cell = f'<a href="{esc(ticket)}">チケット</a>' if ticket else "—"
         status_label = {"FINISHED": "終了", "SCHEDULED": "予定"}.get(status, status)
-        trs.append(
+        return (
             f"<tr><td>{esc(date)}</td><td>{esc(t)}</td>"
             f"<td>{hoa_label}</td><td>{esc(opp)}</td>"
             f"<td>{esc(venue)}</td><td>{ticket_cell}</td>"
             f"<td>{status_label}</td><td>{esc(comp)}</td></tr>"
         )
+
+    # 今後の試合（終了していない、または日付が今日以降）と終了試合に分ける
+    upcoming, finished = [], []
+    for r in rows:
+        date, t, comp, hoa, opp, venue, ticket, status = r
+        if status == "FINISHED" or (date and date < today):
+            finished.append(r)
+        else:
+            upcoming.append(r)
+
+    upcoming_trs = [make_row(r) for r in upcoming]
+    # 終了試合は新しい順に
+    finished_trs = [make_row(r) for r in reversed(finished)]
 
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -339,6 +370,30 @@ def render_html(conn: sqlite3.Connection) -> str:
     else:
         ticket_section = '<h2>チケット発売情報</h2><p class="note">現在、発売情報はありません。</p>'
 
+    thead = ("<thead><tr><th>日付</th><th>時刻</th><th>H/A</th><th>対戦相手</th>"
+             "<th>会場</th><th>チケット</th><th>状態</th><th>大会</th></tr></thead>")
+
+    if upcoming_trs:
+        upcoming_section = f"""<h2>今後の試合（{len(upcoming_trs)}件）</h2>
+<table>
+{thead}
+<tbody>
+{chr(10).join(upcoming_trs)}
+</tbody></table>"""
+    else:
+        upcoming_section = ('<h2>今後の試合</h2>'
+                            '<p class="note">今後の試合はまだ取得できていません。</p>')
+
+    if finished_trs:
+        finished_section = f"""<h2>終了した試合（{len(finished_trs)}件）</h2>
+<table>
+{thead}
+<tbody>
+{chr(10).join(finished_trs)}
+</tbody></table>"""
+    else:
+        finished_section = ""
+
     return f"""<!DOCTYPE html>
 <html lang="ja"><head><meta charset="utf-8">
 <title>鹿島アントラーズ 日程・チケット</title>
@@ -355,13 +410,8 @@ def render_html(conn: sqlite3.Connection) -> str:
 <h1>鹿島アントラーズ 日程・チケット</h1>
 <p class="note">自動更新 / 生成: {generated} / 試合{len(rows)}件</p>
 {ticket_section}
-<h2>日程一覧</h2>
-<table>
-<thead><tr><th>日付</th><th>時刻</th><th>H/A</th><th>対戦相手</th>
-<th>会場</th><th>チケット</th><th>状態</th><th>大会</th></tr></thead>
-<tbody>
-{chr(10).join(trs)}
-</tbody></table>
+{upcoming_section}
+{finished_section}
 </body></html>"""
 
 
