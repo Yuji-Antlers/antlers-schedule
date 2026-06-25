@@ -40,7 +40,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add kashima.db schedule.html index.html
+          git add kashima.db index.html
           if git diff --staged --quiet; then
             echo "変更なし"
           else
