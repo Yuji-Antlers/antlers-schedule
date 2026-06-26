@@ -323,19 +323,46 @@ def render_html(conn: sqlite3.Connection) -> str:
 
     today = datetime.now().strftime("%Y-%m-%d")
 
-    def make_row(r):
-        date, t, comp, hoa, opp, venue, ticket, status = r
-        hoa_label = {"HOME": "ホーム", "AWAY": "アウェイ"}.get(hoa, hoa or "—")
-        ticket_cell = f'<a href="{esc(ticket)}">チケット</a>' if ticket else "—"
-        status_label = {"FINISHED": "終了", "SCHEDULED": "予定"}.get(status, status)
-        return (
-            f"<tr><td>{esc(date)}</td><td>{esc(t)}</td>"
-            f"<td>{hoa_label}</td><td>{esc(opp)}</td>"
-            f"<td>{esc(venue)}</td><td>{ticket_cell}</td>"
-            f"<td>{status_label}</td><td>{esc(comp)}</td></tr>"
-        )
+    # 曜日を求める補助
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
 
-    # 今後の試合（終了していない、または日付が今日以降）と終了試合に分ける
+    def fmt_date(date_str):
+        """YYYY-MM-DD → 「8/7(金)」形式に。失敗時はそのまま返す。"""
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            return f"{d.month}/{d.day}（{weekdays[d.weekday()]}）"
+        except Exception:
+            return date_str
+
+    def match_card(r, is_next=False):
+        date, t, comp, hoa, opp, venue, ticket, status = r
+        hoa_label = {"HOME": "HOME", "AWAY": "AWAY"}.get(hoa, "—")
+        hoa_class = {"HOME": "home", "AWAY": "away"}.get(hoa, "")
+        time_label = t if t else "時刻未定"
+        # 対戦表記: ホームなら「鹿島 vs 相手」、アウェイなら「相手 vs 鹿島」風に主役を出す
+        vs = f'<span class="opp">{esc(opp)}</span>'
+        ticket_btn = (f'<a class="ticket-btn" href="{esc(ticket)}" '
+                      f'target="_blank" rel="noopener">チケット</a>') if ticket else ""
+        next_badge = '<span class="next-badge">NEXT</span>' if is_next else ""
+        comp_label = esc(comp) if comp else ""
+        return f"""<div class="card {hoa_class}{' next' if is_next else ''}">
+  <div class="card-top">
+    <span class="date">{fmt_date(date)}</span>
+    <span class="hoa {hoa_class}">{hoa_label}</span>
+    {next_badge}
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> {vs}
+  </div>
+  <div class="card-meta">
+    <span class="time">{esc(time_label)}</span>
+    <span class="venue">{esc(venue) if venue else ''}</span>
+  </div>
+  <div class="card-comp">{comp_label}</div>
+  {ticket_btn}
+</div>"""
+
+    # 今後/終了に分ける
     upcoming, finished = [], []
     for r in rows:
         date, t, comp, hoa, opp, venue, ticket, status = r
@@ -344,75 +371,196 @@ def render_html(conn: sqlite3.Connection) -> str:
         else:
             upcoming.append(r)
 
-    upcoming_trs = [make_row(r) for r in upcoming]
-    # 終了試合は新しい順に
-    finished_trs = [make_row(r) for r in reversed(finished)]
+    # 今後の試合カード（先頭をNEXTとして強調）
+    up_cards = []
+    for i, r in enumerate(upcoming):
+        up_cards.append(match_card(r, is_next=(i == 0)))
+    fin_cards = [match_card(r) for r in reversed(finished)]
 
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # チケット発売情報セクション
+    # チケット発売情報
     if ticket_rows:
-        ticket_trs = []
+        tcards = []
         for label, stype, start, url in ticket_rows:
-            link = f'<a href="{esc(url)}">購入</a>' if url else "—"
-            ticket_trs.append(
-                f"<tr><td>{esc(start)}</td><td>{esc(stype)}</td>"
-                f"<td>{esc(label)}</td><td>{link}</td></tr>"
-            )
-        ticket_section = f"""
-<h2>チケット発売情報</h2>
-<table>
-<thead><tr><th>発売日</th><th>種別</th><th>試合</th><th>購入</th></tr></thead>
-<tbody>
-{chr(10).join(ticket_trs)}
-</tbody></table>
-"""
+            btn = (f'<a class="ticket-btn" href="{esc(url)}" target="_blank" '
+                   f'rel="noopener">購入ページ</a>') if url else ""
+            stype_label = f'<span class="sale-type">{esc(stype)}</span>' if stype else ""
+            tcards.append(f"""<div class="ticket-card">
+  <div class="sale-head">{stype_label}<span class="sale-start">発売 {esc(start)}</span></div>
+  <div class="sale-match">{esc(label)}</div>
+  {btn}
+</div>""")
+        ticket_section = f"""<section>
+  <h2><span class="h2-mark"></span>チケット発売情報</h2>
+  {chr(10).join(tcards)}
+</section>"""
     else:
-        ticket_section = '<h2>チケット発売情報</h2><p class="note">現在、発売情報はありません。</p>'
+        ticket_section = """<section>
+  <h2><span class="h2-mark"></span>チケット発売情報</h2>
+  <p class="empty">いまは発売中のチケットはありません。発売が決まると、ここに表示されます。</p>
+</section>"""
 
-    thead = ("<thead><tr><th>日付</th><th>時刻</th><th>H/A</th><th>対戦相手</th>"
-             "<th>会場</th><th>チケット</th><th>状態</th><th>大会</th></tr></thead>")
-
-    if upcoming_trs:
-        upcoming_section = f"""<h2>今後の試合（{len(upcoming_trs)}件）</h2>
-<table>
-{thead}
-<tbody>
-{chr(10).join(upcoming_trs)}
-</tbody></table>"""
+    if up_cards:
+        upcoming_section = f"""<section>
+  <h2><span class="h2-mark"></span>今後の試合 <span class="count">{len(up_cards)}</span></h2>
+  {chr(10).join(up_cards)}
+</section>"""
     else:
-        upcoming_section = ('<h2>今後の試合</h2>'
-                            '<p class="note">今後の試合はまだ取得できていません。</p>')
+        upcoming_section = """<section>
+  <h2><span class="h2-mark"></span>今後の試合</h2>
+  <p class="empty">今後の試合はまだ取得できていません。</p>
+</section>"""
 
-    if finished_trs:
-        finished_section = f"""<h2>終了した試合（{len(finished_trs)}件）</h2>
-<table>
-{thead}
-<tbody>
-{chr(10).join(finished_trs)}
-</tbody></table>"""
+    if fin_cards:
+        finished_section = f"""<section>
+  <h2><span class="h2-mark"></span>終了した試合 <span class="count">{len(fin_cards)}</span></h2>
+  {chr(10).join(fin_cards)}
+</section>"""
     else:
         finished_section = ""
 
     return f"""<!DOCTYPE html>
-<html lang="ja"><head><meta charset="utf-8">
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>鹿島アントラーズ 日程・チケット</title>
 <style>
-  body {{ font-family: sans-serif; margin: 2rem; color: #222; }}
-  h1 {{ font-size: 1.2rem; }}
-  h2 {{ font-size: 1.05rem; margin-top: 2rem; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
-  th, td {{ border: 1px solid #ccc; padding: 6px 8px; text-align: left; }}
-  th {{ background: #f2f2f2; }}
-  .note {{ color: #777; font-size: 12px; }}
-</style></head>
+  :root {{
+    --red: #B7183F;       /* アントラーズレッド */
+    --red-dark: #8E0E2E;
+    --navy: #1A2238;      /* サポートカラー ネイビー */
+    --ink: #1c1c20;
+    --paper: #f6f4f2;
+    --line: #e4dfdb;
+    --muted: #8a8378;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }}
+  .wrap {{ max-width: 560px; margin: 0 auto; padding: 0 0 48px; }}
+
+  /* ヘッダー */
+  header {{
+    background: linear-gradient(135deg, var(--red) 0%, var(--red-dark) 100%);
+    color: #fff;
+    padding: 28px 20px 22px;
+    position: relative;
+    overflow: hidden;
+  }}
+  header::after {{
+    /* 鹿の角を想起させる斜めのサッシュ（懸章） */
+    content: "";
+    position: absolute;
+    top: -40px; right: -30px;
+    width: 140px; height: 200px;
+    background: rgba(255,255,255,0.06);
+    transform: rotate(20deg);
+  }}
+  header .club {{ font-size: 13px; letter-spacing: 0.18em; opacity: 0.85; font-weight: 600; }}
+  header h1 {{ font-size: 26px; font-weight: 800; letter-spacing: 0.02em; margin-top: 2px; }}
+  header .sub {{ font-size: 12px; opacity: 0.8; margin-top: 8px; }}
+
+  /* セクション見出し */
+  section {{ padding: 0 16px; margin-top: 28px; }}
+  h2 {{
+    font-size: 16px; font-weight: 800; color: var(--navy);
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  }}
+  .h2-mark {{
+    width: 5px; height: 18px; background: var(--red);
+    border-radius: 3px; display: inline-block;
+  }}
+  .count {{
+    font-size: 12px; font-weight: 700; color: #fff; background: var(--navy);
+    border-radius: 10px; padding: 1px 9px; margin-left: 2px;
+  }}
+
+  /* 試合カード */
+  .card {{
+    background: #fff; border-radius: 14px; padding: 14px 16px;
+    margin-bottom: 10px; border: 1px solid var(--line);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    position: relative;
+  }}
+  .card.next {{
+    border: 1.5px solid var(--red);
+    box-shadow: 0 4px 16px rgba(183,24,63,0.13);
+  }}
+  .card-top {{ display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }}
+  .date {{ font-size: 14px; font-weight: 700; color: var(--ink); }}
+  .hoa {{
+    font-size: 10px; font-weight: 800; letter-spacing: 0.08em;
+    padding: 2px 7px; border-radius: 4px; color: #fff;
+  }}
+  .hoa.home {{ background: var(--red); }}
+  .hoa.away {{ background: var(--navy); }}
+  .next-badge {{
+    margin-left: auto; font-size: 10px; font-weight: 800; letter-spacing: 0.1em;
+    color: var(--red); border: 1.5px solid var(--red); border-radius: 4px;
+    padding: 1px 7px;
+  }}
+  .card-main {{ font-size: 20px; font-weight: 800; color: var(--ink); margin: 2px 0; }}
+  .vs-label {{ font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 4px; }}
+  .card-meta {{ display: flex; gap: 14px; font-size: 13px; color: #555; margin-top: 4px; }}
+  .card-meta .time::before {{ content: "🕐 "; }}
+  .card-meta .venue::before {{ content: "📍 "; }}
+  .card-comp {{ font-size: 11px; color: var(--muted); margin-top: 7px; }}
+  .ticket-btn {{
+    display: inline-block; margin-top: 12px;
+    background: var(--red); color: #fff; text-decoration: none;
+    font-size: 13px; font-weight: 700; padding: 8px 18px; border-radius: 8px;
+  }}
+  .ticket-btn:active {{ background: var(--red-dark); }}
+
+  /* 終了した試合は少し控えめに */
+  section:last-of-type .card {{ opacity: 0.82; }}
+
+  /* チケットカード */
+  .ticket-card {{
+    background: #fff; border-radius: 14px; padding: 14px 16px;
+    margin-bottom: 10px; border: 1px solid var(--line);
+    border-left: 4px solid var(--red);
+  }}
+  .sale-head {{ display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }}
+  .sale-type {{
+    font-size: 10px; font-weight: 800; color: #fff; background: var(--navy);
+    padding: 2px 7px; border-radius: 4px;
+  }}
+  .sale-start {{ font-size: 14px; font-weight: 700; color: var(--red); }}
+  .sale-match {{ font-size: 13px; color: #444; }}
+
+  .empty {{
+    background: #fff; border: 1px dashed var(--line); border-radius: 14px;
+    padding: 18px 16px; font-size: 13px; color: var(--muted);
+  }}
+
+  footer {{
+    text-align: center; font-size: 11px; color: var(--muted);
+    margin-top: 32px; padding: 0 16px;
+  }}
+</style>
+</head>
 <body>
-<h1>鹿島アントラーズ 日程・チケット</h1>
-<p class="note">自動更新 / 生成: {generated} / 試合{len(rows)}件</p>
-{ticket_section}
-{upcoming_section}
-{finished_section}
-</body></html>"""
+<div class="wrap">
+  <header>
+    <div class="club">KASHIMA ANTLERS</div>
+    <h1>鹿島アントラーズ</h1>
+    <div class="sub">日程・チケット発売情報</div>
+  </header>
+  {ticket_section}
+  {upcoming_section}
+  {finished_section}
+  <footer>自動更新 / 最終更新 {generated}<br>データ提供：Ｊリーグ公式</footer>
+</div>
+</body>
+</html>"""
 
 
 # ---- メイン -----------------------------------------------------------
