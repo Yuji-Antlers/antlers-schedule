@@ -1,43 +1,469 @@
 <!DOCTYPE html>
-<html lang="ja"><head><meta charset="utf-8">
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>鹿島アントラーズ 日程・チケット</title>
 <style>
-  body { font-family: sans-serif; margin: 2rem; color: #222; }
-  h1 { font-size: 1.2rem; }
-  h2 { font-size: 1.05rem; margin-top: 2rem; }
-  table { border-collapse: collapse; width: 100%; font-size: 14px; }
-  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
-  th { background: #f2f2f2; }
-  .note { color: #777; font-size: 12px; }
-</style></head>
+  :root {
+    --red: #B7183F;       /* アントラーズレッド */
+    --red-dark: #8E0E2E;
+    --navy: #1A2238;      /* サポートカラー ネイビー */
+    --ink: #1c1c20;
+    --paper: #f6f4f2;
+    --line: #e4dfdb;
+    --muted: #8a8378;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 0 0 48px; }
+
+  /* ヘッダー */
+  header {
+    background: linear-gradient(135deg, var(--red) 0%, var(--red-dark) 100%);
+    color: #fff;
+    padding: 28px 20px 22px;
+    position: relative;
+    overflow: hidden;
+  }
+  header::after {
+    /* 鹿の角を想起させる斜めのサッシュ（懸章） */
+    content: "";
+    position: absolute;
+    top: -40px; right: -30px;
+    width: 140px; height: 200px;
+    background: rgba(255,255,255,0.06);
+    transform: rotate(20deg);
+  }
+  header .club { font-size: 13px; letter-spacing: 0.18em; opacity: 0.85; font-weight: 600; }
+  header h1 { font-size: 26px; font-weight: 800; letter-spacing: 0.02em; margin-top: 2px; }
+  header .sub { font-size: 12px; opacity: 0.8; margin-top: 8px; }
+
+  /* セクション見出し */
+  section { padding: 0 16px; margin-top: 28px; }
+  h2 {
+    font-size: 16px; font-weight: 800; color: var(--navy);
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  }
+  .h2-mark {
+    width: 5px; height: 18px; background: var(--red);
+    border-radius: 3px; display: inline-block;
+  }
+  .count {
+    font-size: 12px; font-weight: 700; color: #fff; background: var(--navy);
+    border-radius: 10px; padding: 1px 9px; margin-left: 2px;
+  }
+
+  /* 試合カード */
+  .card {
+    background: #fff; border-radius: 14px; padding: 14px 16px;
+    margin-bottom: 10px; border: 1px solid var(--line);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    position: relative;
+  }
+  .card.next {
+    border: 1.5px solid var(--red);
+    box-shadow: 0 4px 16px rgba(183,24,63,0.13);
+  }
+  .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .date { font-size: 14px; font-weight: 700; color: var(--ink); }
+  .hoa {
+    font-size: 10px; font-weight: 800; letter-spacing: 0.08em;
+    padding: 2px 7px; border-radius: 4px; color: #fff;
+  }
+  .hoa.home { background: var(--red); }
+  .hoa.away { background: var(--navy); }
+  .next-badge {
+    margin-left: auto; font-size: 10px; font-weight: 800; letter-spacing: 0.1em;
+    color: var(--red); border: 1.5px solid var(--red); border-radius: 4px;
+    padding: 1px 7px;
+  }
+  .card-main { font-size: 20px; font-weight: 800; color: var(--ink); margin: 2px 0; }
+  .vs-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 4px; }
+  .card-meta { display: flex; gap: 14px; font-size: 13px; color: #555; margin-top: 4px; }
+  .card-meta .time::before { content: "🕐 "; }
+  .card-meta .venue::before { content: "📍 "; }
+  .card-comp { font-size: 11px; color: var(--muted); margin-top: 7px; }
+  .ticket-btn {
+    display: inline-block; margin-top: 12px;
+    background: var(--red); color: #fff; text-decoration: none;
+    font-size: 13px; font-weight: 700; padding: 8px 18px; border-radius: 8px;
+  }
+  .ticket-btn:active { background: var(--red-dark); }
+
+  /* 終了した試合は少し控えめに */
+  section:last-of-type .card { opacity: 0.82; }
+
+  /* チケットカード */
+  .ticket-card {
+    background: #fff; border-radius: 14px; padding: 14px 16px;
+    margin-bottom: 10px; border: 1px solid var(--line);
+    border-left: 4px solid var(--red);
+  }
+  .sale-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .sale-type {
+    font-size: 10px; font-weight: 800; color: #fff; background: var(--navy);
+    padding: 2px 7px; border-radius: 4px;
+  }
+  .sale-start { font-size: 14px; font-weight: 700; color: var(--red); }
+  .sale-match { font-size: 13px; color: #444; }
+
+  .empty {
+    background: #fff; border: 1px dashed var(--line); border-radius: 14px;
+    padding: 18px 16px; font-size: 13px; color: var(--muted);
+  }
+
+  footer {
+    text-align: center; font-size: 11px; color: var(--muted);
+    margin-top: 32px; padding: 0 16px;
+  }
+</style>
+</head>
 <body>
-<h1>鹿島アントラーズ 日程・チケット</h1>
-<p class="note">自動更新 / 生成: 2026-06-25 18:35 / 試合20件</p>
-<h2>チケット発売情報</h2><p class="note">現在、発売情報はありません。</p>
-<h2>今後の試合</h2><p class="note">今後の試合はまだ取得できていません。</p>
-<h2>終了した試合（20件）</h2>
-<table>
-<thead><tr><th>日付</th><th>時刻</th><th>H/A</th><th>対戦相手</th><th>会場</th><th>チケット</th><th>状態</th><th>大会</th></tr></thead>
-<tbody>
-<tr><td>2026-06-06</td><td>14:00</td><td>ホーム</td><td>神戸</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　プレーオフラウンド　第2戦</td></tr>
-<tr><td>2026-05-30</td><td>14:00</td><td>アウェイ</td><td>神戸</td><td>ノエスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　プレーオフラウンド　第1戦</td></tr>
-<tr><td>2026-05-23</td><td>17:30</td><td>ホーム</td><td>FC東京</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第18節</td></tr>
-<tr><td>2026-05-17</td><td>14:00</td><td>アウェイ</td><td>千葉</td><td>フクアリ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第17節</td></tr>
-<tr><td>2026-05-10</td><td>14:00</td><td>アウェイ</td><td>横浜FM</td><td>日産ス</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第16節</td></tr>
-<tr><td>2026-05-06</td><td>16:00</td><td>ホーム</td><td>水戸</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第15節</td></tr>
-<tr><td>2026-05-03</td><td>16:00</td><td>ホーム</td><td>町田</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第14節</td></tr>
-<tr><td>2026-04-29</td><td>13:00</td><td>アウェイ</td><td>東京Ｖ</td><td>味スタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第13節</td></tr>
-<tr><td>2026-04-24</td><td>19:00</td><td>アウェイ</td><td>柏</td><td>三協Ｆ柏</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第12節</td></tr>
-<tr><td>2026-04-18</td><td>14:00</td><td>ホーム</td><td>浦和</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第11節</td></tr>
-<tr><td>2026-04-12</td><td>16:00</td><td>アウェイ</td><td>川崎Ｆ</td><td>Ｕ等々力</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第10節</td></tr>
-<tr><td>2026-04-04</td><td>14:00</td><td>アウェイ</td><td>水戸</td><td>Ｋｓスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第9節</td></tr>
-<tr><td>2026-03-22</td><td>15:00</td><td>ホーム</td><td>千葉</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第8節</td></tr>
-<tr><td>2026-03-18</td><td>19:30</td><td>アウェイ</td><td>町田</td><td>MUFG国立</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第7節</td></tr>
-<tr><td>2026-03-14</td><td>15:00</td><td>ホーム</td><td>川崎Ｆ</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第6節</td></tr>
-<tr><td>2026-03-07</td><td>16:00</td><td>ホーム</td><td>東京Ｖ</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第5節</td></tr>
-<tr><td>2026-02-28</td><td>14:00</td><td>アウェイ</td><td>浦和</td><td>埼玉</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第4節</td></tr>
-<tr><td>2026-02-21</td><td>16:00</td><td>ホーム</td><td>柏</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第3節</td></tr>
-<tr><td>2026-02-14</td><td>15:00</td><td>ホーム</td><td>横浜FM</td><td>メルスタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第2節</td></tr>
-<tr><td>2026-02-07</td><td>13:30</td><td>アウェイ</td><td>FC東京</td><td>味スタ</td><td>—</td><td>終了</td><td>明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第1節</td></tr>
-</tbody></table>
-</body></html>
+<div class="wrap">
+  <header>
+    <div class="club">KASHIMA ANTLERS</div>
+    <h1>鹿島アントラーズ</h1>
+    <div class="sub">日程・チケット発売情報</div>
+  </header>
+  <section>
+  <h2><span class="h2-mark"></span>チケット発売情報</h2>
+  <p class="empty">いまは発売中のチケットはありません。発売が決まると、ここに表示されます。</p>
+</section>
+  <section>
+  <h2><span class="h2-mark"></span>今後の試合</h2>
+  <p class="empty">今後の試合はまだ取得できていません。</p>
+</section>
+  <section>
+  <h2><span class="h2-mark"></span>終了した試合 <span class="count">20</span></h2>
+  <div class="card home">
+  <div class="card-top">
+    <span class="date">6/6（土）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">神戸</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">14:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　プレーオフラウンド　第2戦</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">5/30（土）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">神戸</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">14:00</span>
+    <span class="venue">ノエスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　プレーオフラウンド　第1戦</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">5/23（土）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">FC東京</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">17:30</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第18節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">5/17（日）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">千葉</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">14:00</span>
+    <span class="venue">フクアリ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第17節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">5/10（日）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">横浜FM</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">14:00</span>
+    <span class="venue">日産ス</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第16節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">5/6（水）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">水戸</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">16:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第15節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">5/3（日）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">町田</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">16:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第14節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">4/29（水）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">東京Ｖ</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">13:00</span>
+    <span class="venue">味スタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第13節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">4/24（金）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">柏</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">19:00</span>
+    <span class="venue">三協Ｆ柏</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第12節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">4/18（土）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">浦和</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">14:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第11節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">4/12（日）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">川崎Ｆ</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">16:00</span>
+    <span class="venue">Ｕ等々力</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第10節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">4/4（土）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">水戸</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">14:00</span>
+    <span class="venue">Ｋｓスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第9節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">3/22（日）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">千葉</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">15:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第8節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">3/18（水）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">町田</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">19:30</span>
+    <span class="venue">MUFG国立</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第7節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">3/14（土）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">川崎Ｆ</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">15:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第6節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">3/7（土）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">東京Ｖ</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">16:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第5節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">2/28（土）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">浦和</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">14:00</span>
+    <span class="venue">埼玉</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第4節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">2/21（土）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">柏</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">16:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第3節</div>
+  
+</div>
+<div class="card home">
+  <div class="card-top">
+    <span class="date">2/14（土）</span>
+    <span class="hoa home">HOME</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">横浜FM</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">15:00</span>
+    <span class="venue">メルスタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第2節</div>
+  
+</div>
+<div class="card away">
+  <div class="card-top">
+    <span class="date">2/7（土）</span>
+    <span class="hoa away">AWAY</span>
+    
+  </div>
+  <div class="card-main">
+    <span class="vs-label">vs</span> <span class="opp">FC東京</span>
+  </div>
+  <div class="card-meta">
+    <span class="time">13:30</span>
+    <span class="venue">味スタ</span>
+  </div>
+  <div class="card-comp">明治安田Ｊ１百年構想リーグ　地域リーグラウンド　第1節</div>
+  
+</div>
+</section>
+  <footer>自動更新 / 最終更新 2026-06-26 06:41<br>データ提供：Ｊリーグ公式</footer>
+</div>
+</body>
+</html>
