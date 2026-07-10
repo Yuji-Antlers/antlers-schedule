@@ -44,6 +44,10 @@ except ImportError:
 # ---- 設定 -------------------------------------------------------------
 
 SCHEDULE_URL = "https://www.jleague.jp/sp/match/search/all/all/kashima/"
+# 月別カレンダー（新シーズンの試合は検索ページより先にこちらに載ることがある）
+# {yyyymm} には 202608 のような年月が入る
+CALENDAR_URL_TMPL = "https://www.jleague.jp/sp/match/calendar/all/{yyyymm}/kashima/"
+CALENDAR_MONTHS_AHEAD = 4  # 今月から何か月先まで取るか
 USER_AGENT = (
     "KashimaScheduleBot/0.1 (personal schedule checker; "
     "contact: your-email@example.com)"
@@ -68,10 +72,12 @@ def fetch_html(url: str) -> str:
 # ---- 解析 -------------------------------------------------------------
 
 DATE_RE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
+# カレンダーページ等で使われる 2026/8/26 のようなスラッシュ形式
+DATE_SLASH_RE = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})")
 TIME_RE = re.compile(r"([0-2]?\d:[0-5]\d)")
 TICKET_RE = re.compile(r"jleague-ticket\.jp/\S+")
-# 試合詳細リンク: /match/<大会>/<年>/<6桁ID>/live のような形
-MATCH_LINK_RE = re.compile(r"/match/[a-z0-9]+/\d{4}/\d{6}/(?:live|ticket)")
+# 試合詳細リンク: /match/<大会>/<年>/<6桁ID>/live|preview|ticket 等
+MATCH_LINK_RE = re.compile(r"/match/[a-z0-9_]+/\d{4}/\d{6}/(?:live|preview|ticket|spectate)")
 # クラブへのリンク
 CLUB_LINK_RE = re.compile(r"/club/([a-z0-9]+)/")
 
@@ -95,36 +101,56 @@ def parse_matches(html: str) -> list[dict]:
     current_date = ""   # 直近に見つかった日付 (YYYY-MM-DD)
     current_comp = ""   # 直近に見つかった大会名
 
-    # 文書順に全要素を走査
-    for el in soup.find_all(["h2", "h3", "h4", "h5", "a"]):
-        name = el.name
-        text = el.get_text(" ", strip=True)
+    def find_date(text):
+        """テキストから日付を YYYY-MM-DD で返す。無ければ空文字。"""
+        dm = DATE_RE.search(text)
+        if not dm:
+            dm = DATE_SLASH_RE.search(text)
+        if dm:
+            y, mo, d = (int(dm.group(i)) for i in (1, 2, 3))
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+        return ""
 
-        # 見出し: 日付か大会名かを判定して記憶
-        if name in ("h2", "h3", "h4", "h5"):
-            dm = DATE_RE.search(text)
-            if dm:
-                y, mo, d = (int(dm.group(i)) for i in (1, 2, 3))
-                current_date = f"{y:04d}-{mo:02d}-{d:02d}"
-            elif any(k in text for k in ("リーグ", "カップ", "天皇杯",
-                                         "プレーオフ", "ＡＣ", "AC",
-                                         "スーパーカップ", "チャレンジ")):
+    # 文書順に全要素を走査（div/span/li/p/dt も日付キャリアになり得る）
+    for el in soup.find_all(["h2", "h3", "h4", "h5", "a", "p", "dt", "li",
+                             "span", "div", "th", "td"]):
+        name = el.name
+        # 大きなコンテナの全文を毎回舐めないよう、直下テキストを優先
+        if name in ("div", "li"):
+            text = el.find(string=True, recursive=False) or ""
+            text = str(text).strip()
+            if not text:
+                continue
+        else:
+            text = el.get_text(" ", strip=True)
+
+        # 見出し等: 日付か大会名かを判定して記憶
+        if name != "a":
+            d = find_date(text)
+            if d:
+                current_date = d
+            elif name in ("h2", "h3", "h4", "h5") and any(
+                    k in text for k in ("リーグ", "カップ", "天皇杯",
+                                        "プレーオフ", "ＡＣ", "AC",
+                                        "スーパーカップ", "チャレンジ")):
                 current_comp = text
             continue
 
         # リンク: 試合詳細リンクを持つものを試合の単位とする
-        if name == "a":
-            href = el.get("href", "")
-            if not MATCH_LINK_RE.search(href):
-                continue
-            rec = _parse_match_link(el, text, current_date, current_comp)
-            if rec is None:
-                continue
-            key = (rec["date"], rec["home"], rec["away"])
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            matches.append(rec)
+        href = el.get("href", "")
+        if not MATCH_LINK_RE.search(href):
+            continue
+        # リンク自身のテキストに日付が含まれるならそれを優先
+        link_date = find_date(text)
+        date_for_match = link_date or current_date
+        rec = _parse_match_link(el, text, date_for_match, current_comp)
+        if rec is None:
+            continue
+        key = (rec["date"], rec["home"], rec["away"])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        matches.append(rec)
 
     return matches
 
@@ -713,6 +739,54 @@ def maybe_notify_tickets(conn, ticket_url=None, source=None):
         print("チケット通知の送信失敗（次回再試行）")
 
 
+def collect_all_matches() -> list[dict]:
+    """
+    複数ソースから試合を取得して統合する。
+      1. 日程検索ページ（過去〜現行シーズン）
+      2. 月別カレンダーページ（今月〜数か月先。新シーズンの試合は
+         検索ページより先にこちらへ載ることがある）
+    どれか1つでも取れれば続行する。重複は呼び出し側のDB一意制約と
+    ここでのキー重複排除で防ぐ。
+    """
+    all_matches: list[dict] = []
+    seen = set()
+
+    def add(matches, label):
+        added = 0
+        for m in matches:
+            key = (m["date"], m["home"], m["away"])
+            if key in seen:
+                continue
+            seen.add(key)
+            all_matches.append(m)
+            added += 1
+        print(f"  {label}: {len(matches)}件解析 / {added}件追加")
+
+    # ソース1: 日程検索ページ
+    try:
+        html = fetch_html(SCHEDULE_URL)
+        add(parse_matches(html), "検索ページ")
+    except Exception as e:
+        print(f"  検索ページ取得失敗: {e}")
+
+    # ソース2: 月別カレンダー（今月から CALENDAR_MONTHS_AHEAD か月先まで）
+    now = datetime.now()
+    year, month = now.year, now.month
+    for i in range(CALENDAR_MONTHS_AHEAD + 1):
+        y = year + (month + i - 1) // 12
+        mo = (month + i - 1) % 12 + 1
+        yyyymm = f"{y:04d}{mo:02d}"
+        url = CALENDAR_URL_TMPL.format(yyyymm=yyyymm)
+        try:
+            html = fetch_html(url)
+            add(parse_matches(html), f"カレンダー{yyyymm}")
+        except Exception as e:
+            # 該当月のページが無い(404等)のは普通に起こるので警告に留める
+            print(f"  カレンダー{yyyymm}: 取得できず ({e})")
+
+    return all_matches
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", help="ローカルHTMLファイルから解析（テスト用）")
@@ -737,11 +811,11 @@ def main():
     if args.source:
         html = Path(args.source).read_text(encoding="utf-8")
         print(f"ローカルHTMLから解析: {args.source}")
+        matches = parse_matches(html)
     else:
-        print(f"取得中: {SCHEDULE_URL}")
-        html = fetch_html(SCHEDULE_URL)
+        print("複数ソースから取得中...")
+        matches = collect_all_matches()
 
-    matches = parse_matches(html)
     print(f"解析できた試合数: {len(matches)}")
 
     res = upsert_matches(conn, matches)
