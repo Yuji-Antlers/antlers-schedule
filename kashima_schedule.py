@@ -700,6 +700,21 @@ def maybe_notify_tickets(conn, ticket_url=None, source=None):
         return
 
     print(f"チケット発売情報: {len(ticket_list)}件")
+    # 取得できたチケットに含まれないものはDBから消す。
+    # 過去に誤って取り込んだ他クラブの情報や、掲載が終わった発売情報を
+    # 画面に残さないための掃除。取得が失敗した場合はここに来ないので、
+    # 通信エラーで全消しになることはない。
+    current_urls = {t["ticket_url"] for t in ticket_list}
+    existing = conn.execute("SELECT ticket_url FROM tickets").fetchall()
+    removed = 0
+    for (url,) in existing:
+        if url not in current_urls:
+            conn.execute("DELETE FROM tickets WHERE ticket_url=?", (url,))
+            removed += 1
+    if removed:
+        conn.commit()
+        print(f"  掲載が終わった/対象外のチケットを削除: {removed}件")
+
     res = upsert_tickets(conn, ticket_list)
     print(f"  発売新規: {len(res['new'])}  発売変更: {len(res['changed'])}")
 
