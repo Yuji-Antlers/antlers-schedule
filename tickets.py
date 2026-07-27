@@ -52,6 +52,38 @@ def fetch_ticket_html(url: str = TICKET_URL) -> str:
     return resp.text
 
 
+# 鹿島を指す表記のゆれ（ホーム・アウェイどちらの表記でも拾えるように）
+KASHIMA_NAMES = ["鹿島", "アントラーズ", "ANTLERS", "Antlers", "ＡＮＴＬＥＲＳ"]
+# 鹿島のチケット欄を示す見出し
+SECTION_MARKERS = ["今後の5試合", "今後の５試合", "チケット情報"]
+
+
+def is_kashima_match(text: str) -> bool:
+    """テキストが鹿島の絡む試合を指しているかを判定する。"""
+    return any(n in text for n in KASHIMA_NAMES)
+
+
+def _find_kashima_section(soup):
+    """
+    鹿島のチケット欄にあたる範囲を返す。
+    「今後の5試合」等の見出しを探し、その親コンテナを範囲とする。
+    見つからなければページ全体を返す（その場合はクラブ名判定で絞る）。
+    """
+    for marker in SECTION_MARKERS:
+        el = soup.find(string=lambda s: s and marker in s)
+        if not el:
+            continue
+        # 見出しから親をたどり、チケットリンクを含むまとまりを探す
+        node = el.parent if el.parent is not None else None
+        for _ in range(5):
+            if node is None:
+                break
+            if node.find("a", href=re.compile(r"jleague-ticket\.jp/sales/perform")):
+                return node
+            node = node.parent
+    return soup
+
+
 def parse_tickets(html: str) -> list[dict]:
     """
     チケット集約ページを解析し、発売情報のリストを返す。
@@ -69,24 +101,34 @@ def parse_tickets(html: str) -> list[dict]:
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # 「今後の5試合」セクションを起点に探す。見つからなければ全体から拾う。
     body_text = soup.get_text(" ", strip=True)
     for marker in EMPTY_MARKERS:
         if marker in body_text:
-            # ただし発売リンクが別途あれば空ではない可能性もあるので、リンク有無も見る
             if not soup.find("a", href=re.compile(r"jleague-ticket\.jp/sales/perform")):
                 return []
+
+    # 鹿島のチケット欄だけに範囲を絞る。ページには他クラブの宣伝枠や
+    # ナビゲーションにもチケットリンクがあるため、範囲を限定しないと
+    # 無関係な試合を拾ってしまう。
+    scope = _find_kashima_section(soup)
 
     tickets = []
     seen = set()
 
-    # チケット購入リンク（sales/perform）を持つ要素を起点にする
-    for a in soup.find_all("a", href=re.compile(r"jleague-ticket\.jp/sales/perform")):
-        # リンクを含む試合ブロックを遡って取得
+    for a in scope.find_all("a", href=re.compile(r"jleague-ticket\.jp/sales/perform")):
+        # リンクを含む試合ブロックを遡って取得する。
+        # ただし親をたどりすぎると隣の試合まで巻き込んでしまうため、
+        # 「チケットリンクをこの1件だけ含む」範囲に留める。
         block = a
         for _ in range(4):
-            if block.parent is not None:
-                block = block.parent
+            parent = block.parent
+            if parent is None:
+                break
+            link_count = len(parent.find_all(
+                "a", href=re.compile(r"jleague-ticket\.jp/sales/perform")))
+            if link_count > 1:
+                break  # 隣の試合を含み始めたので、ひとつ手前で止める
+            block = parent
             text = block.get_text(" ", strip=True)
             if any(k in text for k in SALE_KEYWORDS) or DATE_RE.search(text):
                 break
@@ -95,6 +137,12 @@ def parse_tickets(html: str) -> list[dict]:
         ticket_url = a["href"]
         if ticket_url in seen:
             continue
+
+        # 鹿島が絡む試合かを確認する。範囲を絞っても取りこぼしや混入が
+        # 起こり得るため、クラブ名での確認を必ず行う。
+        if not is_kashima_match(text):
+            continue
+
         seen.add(ticket_url)
 
         rec = _build_ticket_record(text, ticket_url)
