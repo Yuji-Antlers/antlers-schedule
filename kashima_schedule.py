@@ -80,6 +80,12 @@ TICKET_RE = re.compile(r"jleague-ticket\.jp/\S+")
 MATCH_LINK_RE = re.compile(r"/match/[a-z0-9_]+/\d{4}/\d{6}/(?:live|preview|ticket|spectate)")
 # クラブへのリンク
 CLUB_LINK_RE = re.compile(r"/club/([a-z0-9]+)/")
+# 「鹿島vs町田の試合詳細」のような対戦表記（ホームvsアウェイの順）
+VS_TEXT_RE = re.compile(r"([^\s|]{1,12})\s*vs\s*([^\s|]{1,12})の試合詳細")
+# クラブの日程ページ（対戦相手リンクの判別用）
+CLUB_DAY_RE = re.compile(r"/club/[a-z0-9]+/day/")
+# スタジアムページ（会場名の取得用）
+STADIUM_LINK_RE = re.compile(r"/club/[a-z0-9]+/stadium/")
 
 
 def parse_matches(html: str) -> list[dict]:
@@ -158,40 +164,65 @@ def parse_matches(html: str) -> list[dict]:
 def _parse_match_link(el, text: str, date_str: str, comp: str) -> dict | None:
     """
     試合詳細リンク要素から1試合の情報を抽出する。
-    リンク内のテキストは
-      「| 鹿島 | 1 | 15:00 試合終了 メルスタ | 0 | 横浜FM | DAZN |」
-    のような形。内側の club リンクからホーム・アウェイ名を取る。
+
+    実ページでは、時刻・会場・チケットは試合詳細リンクの「外側」の
+    セルに置かれているため、リンク単体ではなく試合1行(tr)全体を見る。
+    対戦カードはリンク末尾の「○○vs△△の試合詳細」から取るのが最も確実で、
+    ホーム・アウェイの順序もこの表記に従う。
     """
     if not date_str:
         return None
 
-    # 対戦クラブ名: リンク内の /club/ リンクを順に拾う（先=ホーム, 後=アウェイ）
-    clubs = []
-    for a in el.find_all("a", href=True):
-        m = CLUB_LINK_RE.search(a["href"])
-        nm = a.get_text(strip=True)
-        if m and nm:
-            clubs.append(nm)
-    # リンク内に club リンクが無い場合がある（テキストだけ）のでフォールバック
-    if len(clubs) < 2:
-        return None
-    home_name, away_name = clubs[0], clubs[1]
+    # 試合1行の範囲を得る（テーブルでなければ親要素で代用）
+    row = el.find_parent("tr")
+    if row is None:
+        row = el.parent if el.parent is not None else el
+    row_text = row.get_text(" ", strip=True)
 
-    # 時刻: 「未定」も許容。HH:MM があれば採用、なければ "未定" を判定
-    time_m = TIME_RE.search(text)
-    if time_m:
-        kickoff_time = time_m.group(1)
-    elif "未定" in text:
+    # --- 対戦カード ---
+    home_name = away_name = ""
+    m = VS_TEXT_RE.search(text) or VS_TEXT_RE.search(row_text)
+    if m:
+        home_name = m.group(1).strip()
+        away_name = m.group(2).strip()
+    if not home_name or not away_name:
+        # フォールバック: リンク内のクラブリンクの順序で判断
+        clubs = []
+        for a in el.find_all("a", href=True):
+            if CLUB_DAY_RE.search(a["href"]):
+                nm = a.get_text(strip=True)
+                if nm:
+                    clubs.append(nm)
+        if len(clubs) < 2:
+            return None
+        home_name, away_name = clubs[0], clubs[1]
+
+    # --- 時刻（行内にある。未定の場合もある）---
+    tm = TIME_RE.search(row_text)
+    if tm:
+        kickoff_time = tm.group(1)
+    elif "未定" in row_text:
         kickoff_time = "未定"
     else:
         kickoff_time = ""
 
-    venue = _guess_venue(text)
+    # --- 会場（スタジアムリンクの表示名が最も正確）---
+    venue = ""
+    for a in row.find_all("a", href=True):
+        if STADIUM_LINK_RE.search(a["href"]):
+            venue = a.get_text(strip=True)
+            break
+    if not venue:
+        venue = _guess_venue(row_text)
 
-    ticket_m = TICKET_RE.search(str(el))
-    ticket_url = ("https://www." + ticket_m.group(0)) if ticket_m else ""
+    # --- チケット購入リンク ---
+    ticket_url = ""
+    for a in row.find_all("a", href=True):
+        if "jleague-ticket.jp" in a["href"]:
+            ticket_url = a["href"]
+            break
 
-    # ホーム/アウェイ判定（鹿島視点）
+    # --- ホーム/アウェイ（鹿島視点）---
     if CLUB_NAME in home_name:
         home_or_away = "HOME"
     elif CLUB_NAME in away_name:
@@ -199,7 +230,7 @@ def _parse_match_link(el, text: str, date_str: str, comp: str) -> dict | None:
     else:
         home_or_away = "UNKNOWN"
 
-    status = "FINISHED" if "試合終了" in text else "SCHEDULED"
+    status = "FINISHED" if "試合終了" in row_text else "SCHEDULED"
 
     rec = {
         "competition": comp,
@@ -215,8 +246,6 @@ def _parse_match_link(el, text: str, date_str: str, comp: str) -> dict | None:
     }
     rec["fingerprint"] = _fingerprint(rec)
     return rec
-
-
 def _guess_venue(text: str) -> str:
     """テキストから会場名らしき短い語を推定する。"""
     # よく出る会場略称（鹿島の対戦で頻出のもの）。網羅でなく補助。
@@ -775,7 +804,11 @@ def collect_all_matches() -> list[dict]:
             seen.add(key)
             all_matches.append(m)
             added += 1
-        print(f"  {label}: {len(matches)}件解析 / {added}件追加")
+        h = sum(1 for m in matches if m["home_or_away"] == "HOME")
+        a = sum(1 for m in matches if m["home_or_away"] == "AWAY")
+        u = sum(1 for m in matches if m["home_or_away"] == "UNKNOWN")
+        print(f"  {label}: {len(matches)}件解析 (ホーム{h}/アウェイ{a}"
+              f"{'/不明' + str(u) if u else ''}) / {added}件追加")
 
     # ソース1: 日程検索ページ
     try:
